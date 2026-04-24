@@ -26,7 +26,7 @@ class BolometricCorrectionGrid(Grid):
     name = None
     is_full = True
 
-    def __init__(self, bands=None):
+    def __init__(self, bands=None, **kwargs):
 
         self.bands = bands if bands is not None else list(self.default_bands)
 
@@ -42,8 +42,9 @@ class BolometricCorrectionGrid(Grid):
     def _make_band_map(self):
         phot_systems = set()
         band_map = {}
+        version = getattr(self, "version", "1.2")
         for b in self.bands:
-            phot, band = self.get_band(b)
+            phot, band = self.get_band(b, version=version)
             phot_systems.add(phot)
             band_map[b] = band
         self._band_map = band_map
@@ -90,9 +91,9 @@ class BolometricCorrectionGrid(Grid):
         return os.path.join(self.datadir, "{}.h5".format(phot))
 
     def get_tarball_url(self, phot):
+        # Subclasses override this; base implementation uses old CfA URL
         url = "http://waps.cfa.harvard.edu/MIST/BC_tables/{}.txz".format(phot)
         return url
-
     def get_tarball_file(self, phot):
         return os.path.join(self.datadir, "{}.txz".format(phot))
 

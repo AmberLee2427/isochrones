@@ -180,6 +180,16 @@ class StarModel(object):
         if "maxAV" in kwargs:
             self.set_bounds(AV=(0, kwargs["maxAV"]))
 
+        # If coordinates are known, optionally use a dust map to ceiling A_V
+        if "dustmap" in kwargs and self.coords is not None:
+            from .priors import DustMapAVPrior
+            dm_kwargs = kwargs["dustmap"] if isinstance(kwargs["dustmap"], dict) else {}
+            map_name = dm_kwargs.get("map_name", None)
+            self._priors["AV"] = DustMapAVPrior(
+                self.coords.ra.deg, self.coords.dec.deg, map_name=map_name
+            )
+            self._bounds["AV"] = self._priors["AV"].bounds
+
         if "max_distance" in kwargs:
             self.set_bounds(distance=(0, kwargs["max_distance"]))
 
@@ -1381,6 +1391,7 @@ class BasicStarModel(StarModel):
         dec=None,
         obs=None,
         use_emcee=False,
+        dustmap=None,
         **kwargs
     ):
         self._ic = ic
@@ -1478,6 +1489,14 @@ class BasicStarModel(StarModel):
 
         if halo_fraction is not None:
             self._priors["feh"] = FehPrior(halo_fraction=halo_fraction)
+
+        # If coordinates are known, optionally use a dust map to ceiling A_V
+        if dustmap is not None and ra is not None and dec is not None:
+            from .priors import DustMapAVPrior
+            dm_kwargs = dustmap if isinstance(dustmap, dict) else {}
+            map_name = dm_kwargs.get("map_name", None)
+            self._priors["AV"] = DustMapAVPrior(ra, dec, map_name=map_name)
+            self._bounds["AV"] = self._priors["AV"].bounds
 
         self._directory = str(directory)
         self._samples = None

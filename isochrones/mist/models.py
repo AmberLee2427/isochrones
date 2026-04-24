@@ -13,11 +13,47 @@ from isochrones.config import ISOCHRONES
 
 from ..models import StellarModelGrid
 from ..eep import fit_section_poly, eep_fn, eep_jac, eep_fn_p0
-from .eep import max_eep
+from .eep import max_eep, max_eep_v25
 from ..interp import DFInterpolator, searchsorted
 from ..utils import polyval
-from .eep import max_eep
 from ..logger import getLogger
+
+
+# Per-version configuration. URL patterns, grid geometry, and feature flags.
+# When adding a new MIST release, add an entry here and subclass as needed.
+MIST_VERSIONS = {
+    "1.2": {
+        "base_url": "http://waps.cfa.harvard.edu/MIST/data/tarballs_v{version}/",
+        "bc_url": "http://waps.cfa.harvard.edu/MIST/BC_tables/{phot}.txz",
+        "fehs": np.array((-4.00, -3.50, -3.00, -2.50, -2.00, -1.75, -1.50,
+                          -1.25, -1.00, -0.75, -0.50, -0.25, 0.00, 0.25, 0.50)),
+        "n_fehs": 15,
+        "n_eep": 1710,
+        "primary_eeps": (1, 202, 353, 454, 605, 631, 707, 808, 1409, 1710),
+        "eep_labels": ("PMS", "ZAMS", "IAMS", "TAMS", "RGBTip", "ZAHB", "TAHB", "TPAGB", "post-AGB", "WDCS"),
+        "eep_bounds": (0, 1710),
+        "bounds": (("age", (5, 10.13)), ("feh", (-4, 0.5)), ("eep", (0, 1710)), ("mass", (0.1, 300))),
+        "has_wd": False,
+        "has_alpha": False,
+    },
+    "2.5": {
+        # Website moved from waps.cfa.harvard.edu to mist.science for v2+
+        "base_url": "https://mist.science/data/tarballs_v{version}/",
+        "bc_url": "https://mist.science/BC_tables/v2/{phot}.txz",
+        # Metallicity grid gains -2.75 and -2.25 in v2.5 (17 points vs 15)
+        "fehs": np.array((-4.00, -3.50, -3.00, -2.75, -2.50, -2.25, -2.00, -1.75,
+                          -1.50, -1.25, -1.00, -0.75, -0.50, -0.25, 0.00, 0.25, 0.50)),
+        "n_fehs": 17,
+        # WD cooling extends the EEP range to 1552 (confirmed from data files)
+        "n_eep": 1552,
+        "primary_eeps": (1, 202, 353, 454, 605, 631, 707, 808, 1409, 1552),
+        "eep_labels": ("PMS", "ZAMS", "IAMS", "TAMS", "RGBTip", "ZAHB", "TAHB", "TPAGB", "post-AGB", "WDCS"),
+        "eep_bounds": (0, 1552),
+        "bounds": (("age", (5, 10.3)), ("feh", (-4, 0.5)), ("eep", (0, 1552)), ("mass", (0.1, 300))),
+        "has_wd": True,
+        "has_alpha": True,
+    },
+}
 
 
 class MISTModelGrid(StellarModelGrid):
@@ -34,39 +70,40 @@ class MISTModelGrid(StellarModelGrid):
     default_kwargs = {"version": "1.2", "vvcrit": 0.4, "kind": "full_isos"}
     default_columns = StellarModelGrid.default_columns + ("delta_nu", "nu_max", "phase")
 
-    bounds = (("age", (5, 10.13)), ("feh", (-4, 0.5)), ("eep", (0, 1710)), ("mass", (0.1, 300)))
-
-    fehs = np.array(
-        (
-            -4.00,
-            -3.50,
-            -3.00,
-            -2.50,
-            -2.00,
-            -1.75,
-            -1.50,
-            -1.25,
-            -1.00,
-            -0.75,
-            -0.50,
-            -0.25,
-            0.00,
-            0.25,
-            0.50,
-        )
-    )
-    n_fehs = 15
-
-    primary_eeps = (1, 202, 353, 454, 605, 631, 707, 808, 1409, 1710)
-    eep_labels = ("PMS", "ZAMS", "IAMS", "TAMS", "RGBTip", "ZAHB", "TAHB", "TPAGB", "post-AGB", "WDCS")
     eep_labels_highmass = ("PMS", "ZAMS", "IAMS", "TAMS", "RGBTip", "ZACHeB", "TACHeB", "C-burn")
-    n_eep = 1710
 
     @property
-    def foo(self):
-        return self._foo
+    def _version_config(self):
+        return MIST_VERSIONS[self.kwargs.get("version", "1.2")]
+
+    @property
+    def fehs(self):
+        return self._version_config["fehs"]
+
+    @property
+    def n_fehs(self):
+        return self._version_config["n_fehs"]
+
+    @property
+    def n_eep(self):
+        return self._version_config["n_eep"]
+
+    @property
+    def primary_eeps(self):
+        return self._version_config["primary_eeps"]
+
+    @property
+    def eep_labels(self):
+        return self._version_config["eep_labels"]
+
+    @property
+    def bounds(self):
+        return self._version_config["bounds"]
 
     def max_eep(self, mass, feh):
+        version = self.kwargs.get("version", "1.2")
+        if version >= "2.5":
+            return max_eep_v25(mass, feh)
         return max_eep(mass, feh)
 
     @property
@@ -81,7 +118,12 @@ class MISTModelGrid(StellarModelGrid):
         """
         """
         df = super().compute_additional_columns(df)
-        df["feh"] = df["log_surf_z"] - np.log10(df["surface_h1"]) - np.log10(0.0181)  # Aaron Dotter says
+        version = self.kwargs.get("version", "1.2")
+        if version >= "2.5":
+            # v2.5 provides [Fe/H] directly as a column; no need to recompute
+            pass
+        else:
+            df["feh"] = df["log_surf_z"] - np.log10(df["surface_h1"]) - np.log10(0.0181)  # Aaron Dotter says
         return df
 
 
@@ -98,15 +140,25 @@ class MISTIsochroneGrid(MISTModelGrid):
     default_kwargs = {"version": "1.2", "vvcrit": 0.4, "kind": "full_isos"}
     index_cols = ("log10_isochrone_age_yr", "feh", "EEP")
 
-    filename_pattern = "\.iso"
+    filename_pattern = r"\.iso"
     eep_replaces = "mass"
+
+    # v2.5 distributes isochrones per photometric system; UBVRIplus carries the
+    # physical columns needed for interpolation and is the reference download.
+    _v25_phot_system = "UBVRIplus"
 
     @property
     def kwarg_tag(self):
+        version = self.kwargs.get("version", "1.2")
         tag = super().kwarg_tag
+        if version >= "2.5":
+            return tag
         return "{tag}_{kind}".format(tag=tag, **self.kwargs)
 
     def get_directory_path(self, **kwargs):
+        version = self.kwargs.get("version", "1.2")
+        if version >= "2.5":
+            return os.path.join(self.datadir, "MIST{}_{}".format(self.kwarg_tag, self._v25_phot_system))
         return os.path.join(self.datadir, "MIST{}".format(self.kwarg_tag))
 
     def get_tarball_file(self, **kwargs):
@@ -115,22 +167,32 @@ class MISTIsochroneGrid(MISTModelGrid):
 
     def get_tarball_url(self, **kwargs):
         """
-        e.g.
-        http://waps.cfa.harvard.edu/MIST/data/tarballs_v1.2/MIST_v1.2_vvcrit0.4_full_isos.txz
+        v1.2 e.g.:
+            http://waps.cfa.harvard.edu/MIST/data/tarballs_v1.2/MIST_v1.2_vvcrit0.4_full_isos.txz
+        v2.5 distributes by photometric system e.g.:
+            https://mist.science/data/tarballs_v2.5/isos/UBVRIplus.txz
         """
-        return (
-            "http://waps.cfa.harvard.edu/MIST/data/tarballs"
-            + "_v{version}/MIST_v{version}_vvcrit{vvcrit}_{kind}.txz".format(**self.kwargs)
-        )
+        version = self.kwargs.get("version", "1.2")
+        cfg = MIST_VERSIONS[version]
+        if version >= "2.5":
+            base = cfg["base_url"].format(version=version)
+            return "{}isos/{}.txz".format(base, self._v25_phot_system)
+        base = cfg["base_url"].format(version=version)
+        return "{}MIST_v{version}_vvcrit{vvcrit}_{kind}.txz".format(base, **self.kwargs)
 
     @classmethod
     def get_feh(cls, filename):
+        # v2.5 format: feh_m025_afe_p0_... (integer * 100, no decimal point)
+        m = re.search(r"feh_([mp])(\d+)_afe_([mp])(\d+)_", filename)
+        if m and "." not in filename[m.start():m.end()]:
+            sign = 1 if m.group(1) == "p" else -1
+            return sign * int(m.group(2)) / 100.0
+        # v1.2 format: feh_m2.50_afe_... (decimal in filename)
         m = re.search(r"feh_([mp])([0-9]\.[0-9]{2})_afe", filename)
         if m:
             sign = 1 if m.group(1) == "p" else -1
             return float(m.group(2)) * sign
-        else:
-            raise ValueError("{} not a valid MIST file? Cannnot parse [Fe/H]".format(filename))
+        raise ValueError("{} not a valid MIST file? Cannot parse [Fe/H]".format(filename))
 
     @classmethod
     def to_df(cls, filename):
@@ -144,7 +206,9 @@ class MISTIsochroneGrid(MISTModelGrid):
         df = pd.read_csv(
             filename, comment="#", delim_whitespace=True, skip_blank_lines=True, names=column_names
         )
-        df["feh"] = feh
+        # In v2.5 the [Fe/H] column is already present; in v1.2 we add it from the filename.
+        # Both cases: expose feh under the standardized name used by index_cols.
+        df["feh"] = df["[Fe/H]"] if "[Fe/H]" in df.columns else feh
         return df
 
 
@@ -166,11 +230,9 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
 
     index_cols = ("initial_feh", "initial_mass", "EEP")
 
-    default_columns = tuple(set(MISTModelGrid.default_columns) - {"age"}) + (
-        "interpolated",
-        "star_age",
-        "age",
-    )
+    # MISTModelGrid.default_columns is now a property; snapshot it here
+    default_columns = StellarModelGrid.default_columns + ("delta_nu", "nu_max", "phase",
+                                                          "interpolated", "star_age", "age")
 
     eep_replaces = "age"
 
@@ -201,7 +263,13 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
 
     @property
     def kwarg_tag(self):
-        return "_v{version}_vvcrit{vvcrit}".format(**self.kwargs)
+        version = self.kwargs.get("version", "1.2")
+        tag = "_v{version}_vvcrit{vvcrit}".format(**self.kwargs)
+        if version >= "2.5":
+            afe = self.kwargs.get("afe", 0.0)
+            afe_sign = "m" if afe < 0 else "p"
+            tag += "_afe_{}{:.1f}".format(afe_sign, abs(afe))
+        return tag
 
     @property
     def prop_map(self):
@@ -239,11 +307,12 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
 
     def get_tarball_url(self, feh):
         basename = self.get_file_basename(feh)
-        version = self.kwargs["version"]
-        return "http://waps.cfa.harvard.edu/MIST/data/tarballs_v{version}/{basename}.txz".format(
-            version=version, basename=basename
-        )
-        return os.path.join(self.datadir, "{}.txz".format(basename))
+        version = self.kwargs.get("version", "1.2")
+        cfg = MIST_VERSIONS[version]
+        base = cfg["base_url"].format(version=version)
+        if version >= "2.5":
+            return "{}eeps/{}.txz".format(base, basename)
+        return "{}{}.txz".format(base, basename)
 
     def get_tarball_file(self, feh):
         basename = self.get_file_basename(feh)
@@ -333,7 +402,7 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
                 desc="interpolating missing values in evolution tracks (feh={})'".format(feh),
             ):
                 n_eep = len(df.xs(m, level="initial_mass"))
-                eep_max = max_eep(m, feh)
+                eep_max = self.max_eep(m, feh)
                 if not eep_max:
                     raise ValueError("No eep_max return value for ({}, {})?".format(m, feh))
                 if n_eep < eep_max:

@@ -343,7 +343,8 @@ class ModelGridInterpolator(object):
     @property
     def bc_grid(self):
         if self._bc_grid is None:
-            self._bc_grid = self.bc_type(self.bands)
+            version = self.kwargs.get("version", "1.2")
+            self._bc_grid = self.bc_type(self.bands, version=version)
         return self._bc_grid
 
     def initialize(self, pars=None):

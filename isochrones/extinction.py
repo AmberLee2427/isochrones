@@ -1,4 +1,5 @@
 import re
+import warnings
 
 from .config import on_rtd
 
@@ -8,14 +9,27 @@ if not on_rtd:
 
 
 def get_AV_infinity(ra, dec, frame="icrs"):
-    """
-    Gets the A_V exctinction at infinity for a given line of sight.
-    Queries the NED database.
+    """Gets A_V extinction at infinity toward (ra, dec) by scraping NED.
+
+    .. deprecated::
+        Use :class:`isochrones.dustmaps.DustMap` instead, which supports
+        3D distance-dependent extinction via the modern ``dustmaps`` package.
+
     :param ra,dec:
         Desired coordinates, in degrees.
     :param frame: (optional)
         Frame of input coordinates (e.g., ``'icrs', 'galactic'``)
     """
+    try:
+        import dustmaps as _dm  # noqa: F401
+        _alt = " Use isochrones.dustmaps.DustMap instead (pip install isochrones[dustmaps])."
+    except ImportError:
+        _alt = ""
+    warnings.warn(
+        "get_AV_infinity queries NED and is fragile." + _alt,
+        DeprecationWarning,
+        stacklevel=2,
+    )
     coords = SkyCoord(ra, dec, unit="deg", frame=frame).transform_to("icrs")
 
     rah, ram, ras = coords.ra.hms

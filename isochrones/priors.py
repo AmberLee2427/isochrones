@@ -517,3 +517,22 @@ class ChabrierPrior(BrokenPrior):
         super().__init__(
             [LogNormalPrior(np.log(0.079), 0.69 * np.log(10)), PowerLawPrior(-2.35, (1.0, 100.0))], [1.0], bounds=bounds, **kwargs
         )  # from Chabrier 2003, Eqn 17
+
+
+class DustMapAVPrior(AVPrior):
+    """Flat A_V prior with ceiling from a dust map query.
+
+    Queries the map at infinity (or a given distance) and applies a padding
+    factor to allow for map uncertainties.  The actual A_V is still a free
+    parameter; this just keeps the prior physically grounded.
+    """
+
+    def __init__(self, ra, dec, distance=None, map_name=None, padding=1.5, **kwargs):
+        from . import dustmaps as _dustmaps_mod
+        dm = _dustmaps_mod.DustMap(map_name=map_name)
+        AV_max = dm.get_AV(ra, dec, distance=distance) * padding
+        # Never let the ceiling drop below a floor; map can return near-zero
+        # in low-extinction windows where the star may actually be reddened.
+        AV_max = max(AV_max, 0.5)
+        bounds = kwargs.pop("bounds", (0, AV_max))
+        super().__init__(bounds=bounds, **kwargs)

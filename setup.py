@@ -67,5 +67,14 @@ setup(
         "configobj",
         "tqdm",
     ],
+    extras_require={
+        # pip install isochrones[dustmaps]  -- enables DustMap and DustMapAVPrior
+        "dustmaps": ["dustmaps>=1.0"],
+        # pip install isochrones[mistv25]   -- no new Python deps; signals intent
+        #   to use MIST v2.5 grids (new filters, WD sequences, alpha-enhanced models).
+        #   Pass version="2.5" to get_ichrone() or MISTIsochroneGrid after installing.
+        "mistv25": [],
+        "all": ["dustmaps>=1.0"],
+    },
     zip_safe=False,
 )

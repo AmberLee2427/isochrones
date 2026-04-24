@@ -1,6 +1,7 @@
 import re
 
 from ..bc import BolometricCorrectionGrid
+from .models import MIST_VERSIONS
 
 
 class MISTBolometricCorrectionGrid(BolometricCorrectionGrid):
@@ -21,6 +22,7 @@ class MISTBolometricCorrectionGrid(BolometricCorrectionGrid):
             "Hipparcos_Hp",
             "Tycho_B",
             "Tycho_V",
+            # DR2Rev passbands kept for backward compat with v1.2 users
             "Gaia_G_DR2Rev",
             "Gaia_BP_DR2Rev",
             "Gaia_RP_DR2Rev",
@@ -28,7 +30,13 @@ class MISTBolometricCorrectionGrid(BolometricCorrectionGrid):
             "Gaia_BP_MAWf",
             "Gaia_BP_MAWb",
             "Gaia_RP_MAW",
+            # EDR3 passbands; available in MIST v2.5 BC tables
+            "Gaia_G_EDR3",
+            "Gaia_BP_EDR3",
+            "Gaia_RP_EDR3",
             "TESS",
+            "Gemini_NIRI_BrG",
+            "WIYN_NESSI_NB832",
         ],
         WISE=["WISE_W1", "WISE_W2", "WISE_W3", "WISE_W4"],
         CFHT=["CFHT_u", "CFHT_g", "CFHT_r", "CFHT_i_new", "CFHT_i_old", "CFHT_z"],
@@ -151,12 +159,53 @@ class MISTBolometricCorrectionGrid(BolometricCorrectionGrid):
             "WFPC2_F675W",
             "WFPC2_F791W",
             "WFPC2_F814W",
-            "WFPC2_F850LP"
-        ]
-
+            "WFPC2_F850LP",
+        ],
+        # Roman Space Telescope WFI filters (available in MIST v2.5 BC tables)
+        Roman=[
+            "Roman_F062",
+            "Roman_F087",
+            "Roman_F106",
+            "Roman_F129",
+            "Roman_F158",
+            "Roman_W146",
+            "Roman_F184",
+            "Roman_F213",
+        ],
+        # Euclid VIS + NISP photometric bands (available in MIST v2.5 BC tables)
+        Euclid=[
+            "Euclid_VIS",
+            "Euclid_Y",
+            "Euclid_J",
+            "Euclid_H",
+        ],
+        # HSC (Subaru Hyper Suprime-Cam)
+        HSC=["HSC_g", "HSC_r", "HSC_i", "HSC_z", "HSC_y", "HSC_nb816", "HSC_nb921"],
+        # S-PLUS
+        SPLUS=[
+            "SPLUS_uJAVA", "SPLUS_F378", "SPLUS_F395", "SPLUS_F410", "SPLUS_F430",
+            "SPLUS_g", "SPLUS_F515", "SPLUS_r", "SPLUS_F660", "SPLUS_i",
+            "SPLUS_F861", "SPLUS_z",
+        ],
+        # VISTA (ESO VIRCAM)
+        VISTA=["VISTA_Z", "VISTA_Y", "VISTA_J", "VISTA_H", "VISTA_Ks"],
+        # NIRISS (JWST Near Infrared Imager and Slitless Spectrograph)
+        NIRISS=[
+            "NIRISS_F090W", "NIRISS_F115W", "NIRISS_F140M", "NIRISS_F150W",
+            "NIRISS_F158M", "NIRISS_F200W", "NIRISS_F277W", "NIRISS_F356W",
+            "NIRISS_F380M", "NIRISS_F430M", "NIRISS_F444W", "NIRISS_F480M",
+        ],
     )
 
     default_bands = ("J", "H", "K", "G", "BP", "RP", "W1", "W2", "W3", "TESS", "Kepler")
+
+    def __init__(self, bands=None, version="1.2"):
+        self.version = version
+        super().__init__(bands=bands)
+
+    def get_tarball_url(self, phot):
+        cfg = MIST_VERSIONS[self.version]
+        return cfg["bc_url"].format(phot=phot)
 
     def get_df(self, *args, **kwargs):
         df = super().get_df(*args, **kwargs)
@@ -166,8 +215,11 @@ class MISTBolometricCorrectionGrid(BolometricCorrectionGrid):
     def get_band(cls, b, **kwargs):
         """Defines what a "shortcut" band name refers to.  Returns phot_system, band
 
+        Gaia shortcut resolution is version-aware: v1.2 gives DR2Rev passbands,
+        v2.5+ gives EDR3 passbands (revised photometric system).
         """
         phot = None
+        version = kwargs.get("version", "1.2")
 
         # Default to SDSS for these
         if b in ["u", "g", "r", "i", "z"]:
@@ -193,24 +245,19 @@ class MISTBolometricCorrectionGrid(BolometricCorrectionGrid):
             band = "WISE_{}".format(b)
         elif b in ("G", "BP", "RP"):
             phot = "UBVRIplus"
-            band = "Gaia_{}_DR2Rev".format(b)
-            if "version" in kwargs:
-                if kwargs["version"] in ("1.1", "1.2"):
-                    band += "_DR2Rev"
+            # EDR3 passbands for v2.5+; DR2Rev for v1.x
+            if version >= "2.0":
+                band = "Gaia_{}_EDR3".format(b)
+            else:
+                band = "Gaia_{}_DR2Rev".format(b)
         elif b == "Bp":
             phot = "UBVRIplus"
-            band = "Gaia_BP_DR2Rev"
-            if "version" in kwargs:
-                if kwargs["version"] in ("1.1", "1.2"):
-                    band += "_DR2Rev"
+            band = "Gaia_BP_EDR3" if version >= "2.0" else "Gaia_BP_DR2Rev"
         elif b == "Rp":
             phot = "UBVRIplus"
-            band = "Gaia_RP_DR2Rev"
-            if "version" in kwargs:
-                if kwargs["version"] in ("1.1", "1.2"):
-                    band += "_DR2Rev"
+            band = "Gaia_RP_EDR3" if version >= "2.0" else "Gaia_RP_DR2Rev"
         else:
-            m = re.match("([a-zA-Z]+)_([a-zA-Z_]+)", b)
+            m = re.match("([a-zA-Z]+)_([a-zA-Z0-9_]+)", b)
             if m:
                 if m.group(1) in cls.phot_bands.keys():
                     phot = m.group(1)
