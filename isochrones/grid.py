@@ -113,7 +113,7 @@ class Grid(object):
         df = self.get_df(orig=orig)
         h5file = self.hdf_filename
         path = "orig" if orig else "df"
-        df.to_hdf(h5file, path)
+        df.to_hdf(path_or_buf=h5file, key=path)
         getLogger().info("{} written to {}.".format(path, h5file))
         return df
 

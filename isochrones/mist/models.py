@@ -56,6 +56,20 @@ MIST_VERSIONS = {
 }
 
 
+def _format_v25_signed_tag(value, scale, width):
+    sign = "m" if value < 0 else "p"
+    scaled = int(round(abs(value) * scale))
+    return f"{sign}{scaled:0{width}d}"
+
+
+def _format_v25_track_dir(feh, afe, vvcrit):
+    return (
+        f"feh_{_format_v25_signed_tag(feh, scale=100, width=3)}_"
+        f"afe_{_format_v25_signed_tag(afe, scale=10, width=1)}_"
+        f"vvcrit{vvcrit:.1f}"
+    )
+
+
 class MISTModelGrid(StellarModelGrid):
     name = "mist"
     eep_col = "EEP"
@@ -120,8 +134,13 @@ class MISTModelGrid(StellarModelGrid):
         df = super().compute_additional_columns(df)
         version = self.kwargs.get("version", "1.2")
         if version >= "2.5":
-            # v2.5 provides [Fe/H] directly as a column; no need to recompute
-            pass
+            if "log_surf_cell_z" in df.columns and "surface_h1" in df.columns:
+                df["feh"] = df["log_surf_cell_z"] - np.log10(df["surface_h1"]) - np.log10(0.0181)
+            elif "feh" not in df.columns:
+                raise KeyError(
+                    "v2.5 MIST data are missing the columns needed to compute `feh` "
+                    "(expected `log_surf_cell_z` and `surface_h1`)."
+                )
         else:
             df["feh"] = df["log_surf_z"] - np.log10(df["surface_h1"]) - np.log10(0.0181)  # Aaron Dotter says
         return df
@@ -204,7 +223,7 @@ class MISTIsochroneGrid(MISTModelGrid):
                     break
         feh = cls.get_feh(filename)
         df = pd.read_csv(
-            filename, comment="#", delim_whitespace=True, skip_blank_lines=True, names=column_names
+            filename, comment="#", sep=r"\s+", skip_blank_lines=True, names=column_names
         )
         # In v2.5 the [Fe/H] column is already present; in v1.2 we add it from the filename.
         # Both cases: expose feh under the standardized name used by index_cols.
@@ -267,8 +286,7 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
         tag = "_v{version}_vvcrit{vvcrit}".format(**self.kwargs)
         if version >= "2.5":
             afe = self.kwargs.get("afe", 0.0)
-            afe_sign = "m" if afe < 0 else "p"
-            tag += "_afe_{}{:.1f}".format(afe_sign, abs(afe))
+            tag += f"_afe_{_format_v25_signed_tag(afe, scale=10, width=1)}"
         return tag
 
     @property
@@ -290,6 +308,15 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
         return df
 
     def get_file_basename(self, feh):
+        version = self.kwargs.get("version", "1.2")
+        if version >= "2.5":
+            return (
+                f"MIST_v{version}_"
+                f"feh_{_format_v25_signed_tag(feh, scale=100, width=3)}_"
+                f"afe_{_format_v25_signed_tag(self.kwargs['afe'], scale=10, width=1)}_"
+                f"vvcrit{self.kwargs['vvcrit']:.1f}_EEPS"
+            )
+
         feh_sign = "m" if feh < 0 else "p"
         afe = self.kwargs["afe"]
         afe_sign = "m" if afe < 0 else "p"
@@ -302,6 +329,12 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
         )
 
     def get_directory_path(self, feh):
+        version = self.kwargs.get("version", "1.2")
+        if version >= "2.5":
+            return os.path.join(
+                self.datadir,
+                _format_v25_track_dir(feh, self.kwargs["afe"], self.kwargs["vvcrit"]),
+            )
         basename = self.get_file_basename(feh)
         return os.path.join(self.datadir, basename)
 
@@ -344,7 +377,7 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
                     break
         initial_mass = cls.get_mass(filename)
         df = pd.read_csv(
-            filename, comment="#", delim_whitespace=True, skip_blank_lines=True, names=column_names
+            filename, comment="#", sep=r"\s+", skip_blank_lines=True, names=column_names
         )
         df["initial_mass"] = initial_mass
         try:
@@ -361,6 +394,9 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
         directory = self.get_directory_path(feh)
         if not os.path.exists(directory):
             self.extract_tarball(feh=feh)
+        version = self.kwargs.get("version", "1.2")
+        if version >= "2.5":
+            return glob.glob(os.path.join(directory, "eeps", "*.track.eep"))
         return glob.glob(os.path.join(directory, "*.track.eep"))
 
     def get_feh_hdf_filename(self, feh):
@@ -380,7 +416,7 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
             df["initial_feh"] = feh
             df = df.sort_values(by=list(self.index_cols))
             df.index = [df[c] for c in self.index_cols]
-            df.to_hdf(hdf_filename, "df")
+            df.to_hdf(path_or_buf=hdf_filename, key="df")
             df = pd.read_hdf(hdf_filename, "df")
         return df
 
@@ -438,7 +474,7 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
                     )
                     new_eeps = np.arange(n_eep + 1, eep_max + 1)
                     new_index = pd.MultiIndex.from_product([[feh], [m], new_eeps])
-                    new_data = pd.DataFrame(index=new_index, columns=df_interp.columns, dtype=float)
+                    new_data = pd.DataFrame(index=new_index)
 
                     # Interpolate values
                     norm_distance = (m - mlo) / (mhi - mlo)
@@ -448,11 +484,11 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
                         df.loc[lo_index, :].values * (1 - norm_distance)
                         + df.loc[hi_index, :].values * norm_distance
                     )
-                    new_data.loc[:, "interpolated"] = True
+                    new_data["interpolated"] = True
                     df_interp = pd.concat([df_interp, new_data])
 
             df_interp.sort_index(inplace=True)
-            df_interp.to_hdf(hdf_filename, "df")
+            df_interp.to_hdf(path_or_buf=hdf_filename, key="df")
             df_interp = pd.read_hdf(hdf_filename, "df")
 
         return df_interp
@@ -498,7 +534,7 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
                 deriv = np.gradient(log_age, subdf["eep"])
                 subdf.loc[:, "dt_deep"] = deriv
 
-            df.dt_deep.to_hdf(filename, "dt_deep")
+            df.dt_deep.to_hdf(path_or_buf=filename, key="dt_deep")
             dt_deep = pd.read_hdf(filename, "dt_deep")
 
         return dt_deep
@@ -558,10 +594,13 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
 
         p_dfs = [self.fit_eep_section(a, b, order=o) for (a, b), o in zip(self.eep_sections, orders)]
         for df, (a, b) in zip(p_dfs, self.eep_sections):
-            df.to_hdf(self.eep_param_filename, "eep_{:.0f}_{:.0f}".format(a, b))
+            df.to_hdf(
+                path_or_buf=self.eep_param_filename,
+                key="eep_{:.0f}_{:.0f}".format(a, b),
+            )
 
         p_approx_df = self.fit_approx_eep()
-        p_approx_df.to_hdf(self.eep_param_filename, "approx")
+        p_approx_df.to_hdf(path_or_buf=self.eep_param_filename, key="approx")
 
     def get_eep_interps(self):
         """Get list of interp functions for piecewise polynomial params
