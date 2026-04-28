@@ -13,7 +13,7 @@ from isochrones.config import ISOCHRONES
 
 from ..models import StellarModelGrid
 from ..eep import fit_section_poly, eep_fn, eep_jac, eep_fn_p0
-from .eep import max_eep, max_eep_v25
+from .eep import max_eep
 from ..interp import DFInterpolator, searchsorted
 from ..utils import polyval
 from ..logger import getLogger
@@ -82,7 +82,14 @@ class MISTModelGrid(StellarModelGrid):
     logL_col = "log_L"
 
     default_kwargs = {"version": "1.2", "vvcrit": 0.4, "kind": "full_isos"}
-    default_columns = StellarModelGrid.default_columns + ("delta_nu", "nu_max", "phase")
+    _default_columns_v12 = StellarModelGrid.default_columns + ("delta_nu", "nu_max", "phase")
+    _default_columns_v25 = StellarModelGrid.default_columns + ("phase",)
+
+    @property
+    def default_columns(self):
+        if self.kwargs.get("version", "1.2") >= "2.5":
+            return self._default_columns_v25
+        return self._default_columns_v12
 
     eep_labels_highmass = ("PMS", "ZAMS", "IAMS", "TAMS", "RGBTip", "ZACHeB", "TACHeB", "C-burn")
 
@@ -115,9 +122,6 @@ class MISTModelGrid(StellarModelGrid):
         return self._version_config["bounds"]
 
     def max_eep(self, mass, feh):
-        version = self.kwargs.get("version", "1.2")
-        if version >= "2.5":
-            return max_eep_v25(mass, feh)
         return max_eep(mass, feh)
 
     @property
@@ -133,15 +137,7 @@ class MISTModelGrid(StellarModelGrid):
         """
         df = super().compute_additional_columns(df)
         version = self.kwargs.get("version", "1.2")
-        if version >= "2.5":
-            if "log_surf_cell_z" in df.columns and "surface_h1" in df.columns:
-                df["feh"] = df["log_surf_cell_z"] - np.log10(df["surface_h1"]) - np.log10(0.0181)
-            elif "feh" not in df.columns:
-                raise KeyError(
-                    "v2.5 MIST data are missing the columns needed to compute `feh` "
-                    "(expected `log_surf_cell_z` and `surface_h1`)."
-                )
-        else:
+        if version < "2.5":
             df["feh"] = df["log_surf_z"] - np.log10(df["surface_h1"]) - np.log10(0.0181)  # Aaron Dotter says
         return df
 
@@ -159,12 +155,23 @@ class MISTIsochroneGrid(MISTModelGrid):
     default_kwargs = {"version": "1.2", "vvcrit": 0.4, "kind": "full_isos"}
     index_cols = ("log10_isochrone_age_yr", "feh", "EEP")
 
-    filename_pattern = r"\.iso"
     eep_replaces = "mass"
 
     # v2.5 distributes isochrones per photometric system; UBVRIplus carries the
     # physical columns needed for interpolation and is the reference download.
     _v25_phot_system = "UBVRIplus"
+
+    @property
+    def filename_pattern(self):
+        version = self.kwargs.get("version", "1.2")
+        if version >= "2.5":
+            vvcrit = self.kwargs["vvcrit"]
+            afe = self.kwargs["afe"]
+            afe_tag = _format_v25_signed_tag(afe, scale=10, width=1)
+            return r"_afe_{afe}_vvcrit{vvcrit:.1f}_full\.iso".format(
+                afe=afe_tag, vvcrit=vvcrit
+            )
+        return r"\.iso"
 
     @property
     def kwarg_tag(self):
@@ -183,6 +190,29 @@ class MISTIsochroneGrid(MISTModelGrid):
     def get_tarball_file(self, **kwargs):
         filename = self.get_directory_path(**kwargs)
         return "{}.txz".format(filename)
+
+    def extract_tarball(self, **kwargs):
+        version = self.kwargs.get("version", "1.2")
+        if version >= "2.5":
+            # v2.5 tarballs contain flat files (no subdirectory); extract into
+            # the versioned directory so get_existing_filenames can find them.
+            import tarfile as _tarfile
+            tarball = self.get_tarball_file(**kwargs)
+            if not os.path.exists(tarball):
+                self.download_tarball(**kwargs)
+            destdir = self.get_directory_path(**kwargs)
+            if not os.path.exists(destdir):
+                os.makedirs(destdir)
+            try:
+                with _tarfile.open(tarball) as tar:
+                    getLogger().info("Extracting {}...".format(tarball))
+                    tar.extractall(destdir)
+            except EOFError:
+                getLogger().error("{} corrupted; deleting and re-downloading.".format(tarball))
+                os.remove(tarball)
+                self.extract_tarball(**kwargs)
+        else:
+            super().extract_tarball(**kwargs)
 
     def get_tarball_url(self, **kwargs):
         """
@@ -225,9 +255,11 @@ class MISTIsochroneGrid(MISTModelGrid):
         df = pd.read_csv(
             filename, comment="#", sep=r"\s+", skip_blank_lines=True, names=column_names
         )
-        # In v2.5 the [Fe/H] column is already present; in v1.2 we add it from the filename.
-        # Both cases: expose feh under the standardized name used by index_cols.
-        df["feh"] = df["[Fe/H]"] if "[Fe/H]" in df.columns else feh
+        # feh for the index comes from the filename (the nominal grid metallicity).
+        # v2.5 also has per-star [Fe/H] and [Fe/H]_init columns, but those vary
+        # along the isochrone and collide with the column_map rename; drop them.
+        df["feh"] = feh
+        df = df.drop(columns=["[Fe/H]", "[Fe/H]_init"], errors="ignore")
         return df
 
 
@@ -249,9 +281,12 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
 
     index_cols = ("initial_feh", "initial_mass", "EEP")
 
-    # MISTModelGrid.default_columns is now a property; snapshot it here
-    default_columns = StellarModelGrid.default_columns + ("delta_nu", "nu_max", "phase",
-                                                          "interpolated", "star_age", "age")
+    @property
+    def default_columns(self):
+        if self.kwargs.get("version", "1.2") < "2.5":
+            return StellarModelGrid.default_columns + ("delta_nu", "nu_max", "phase",
+                                                       "interpolated", "star_age")
+        return StellarModelGrid.default_columns + ("phase", "interpolated", "star_age")
 
     eep_replaces = "age"
 
@@ -282,10 +317,10 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
 
     @property
     def kwarg_tag(self):
-        version = self.kwargs.get("version", "1.2")
+        version = self.kwargs["version"]
         tag = "_v{version}_vvcrit{vvcrit}".format(**self.kwargs)
         if version >= "2.5":
-            afe = self.kwargs.get("afe", 0.0)
+            afe = self.kwargs["afe"]
             tag += f"_afe_{_format_v25_signed_tag(afe, scale=10, width=1)}"
         return tag
 
@@ -305,6 +340,8 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
         """
         df = super().compute_additional_columns(df)
         df["age"] = np.log10(df["star_age"])
+        if self.kwargs.get("version", "1.2") >= "2.5":
+            df["feh"] = df["initial_feh"]
         return df
 
     def get_file_basename(self, feh):
@@ -340,7 +377,7 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
 
     def get_tarball_url(self, feh):
         basename = self.get_file_basename(feh)
-        version = self.kwargs.get("version", "1.2")
+        version = self.kwargs["version"]
         cfg = MIST_VERSIONS[version]
         base = cfg["base_url"].format(version=version)
         if version >= "2.5":
@@ -432,13 +469,24 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
             df_interp = df.copy()
             df_interp["interpolated"] = False
             masses = df.index.levels[1]
+            version = self.kwargs.get("version", "1.2")
+            if version >= "2.5":
+                # Per-mass EEP counts; some individual tracks crash at unusual EEPs.
+                # Use neighbour median so isolated failures don't set the ceiling.
+                n_eeps = np.array([len(df.xs(m, level="initial_mass")) for m in masses])
             for i, m in tqdm(
                 enumerate(masses),
                 total=len(masses),
                 desc="interpolating missing values in evolution tracks (feh={})'".format(feh),
             ):
                 n_eep = len(df.xs(m, level="initial_mass"))
-                eep_max = self.max_eep(m, feh)
+                if version >= "2.5":
+                    lo = max(0, i - 2)
+                    hi = min(len(masses), i + 3)
+                    neighbours = np.concatenate([n_eeps[lo:i], n_eeps[i+1:hi]])
+                    eep_max = int(np.median(neighbours)) if len(neighbours) else n_eep
+                else:
+                    eep_max = self.max_eep(m, feh)
                 if not eep_max:
                     raise ValueError("No eep_max return value for ({}, {})?".format(m, feh))
                 if n_eep < eep_max:
@@ -453,19 +501,29 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
                         if nlo >= eep_max:
                             found_lower = True
                         if ilo == 0:
+                            if version >= "2.5":
+                                # Low-mass tracks at extreme feh may never reach WD sequence;
+                                # leave them at their natural EEP count.
+                                break
                             raise ValueError("Did not find mlo for ({}, {})".format(m, feh))
+                    if not found_lower:
+                        continue
 
                     # Find upper limit
                     ihi = i
                     found_upper = False
                     while not found_upper:
                         ihi += 1
+                        if ihi >= len(masses):
+                            if version >= "2.5":
+                                break
+                            raise ValueError("Did not find mhi for ({}, {})".format(m, feh))
                         mhi = masses[ihi]
                         nhi = len(df.xs(mhi, level="initial_mass"))
                         if nhi >= eep_max:
                             found_upper = True
-                        if ihi > len(masses):
-                            raise ValueError("Did not find mhi for ({}, {})".format(m, feh))
+                    if not found_upper:
+                        continue
 
                     getLogger().info(
                         "{}: {} (expected {}).  Interpolating between {} and {}".format(
@@ -529,7 +587,10 @@ class MISTEvolutionTrackGrid(MISTModelGrid):
                 total=len(list(itertools.product(*df.index.levels[:2]))),
                 desc="Computing dt/deep",
             ):
-                subdf = df.loc[f, m]
+                try:
+                    subdf = df.loc[f, m]
+                except KeyError:
+                    continue
                 log_age = np.log10(subdf["star_age"])
                 deriv = np.gradient(log_age, subdf["eep"])
                 subdf.loc[:, "dt_deep"] = deriv

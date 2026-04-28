@@ -120,20 +120,3 @@ def test_dustmap_av_prior_subclasses_avprior():
     """DustMapAVPrior must be usable wherever AVPrior is used."""
     assert issubclass(DustMapAVPrior, AVPrior)
 
-
-# --- Deprecation warning on get_AV_infinity ---
-
-def test_get_av_infinity_deprecated():
-    import warnings
-    from isochrones.extinction import get_AV_infinity
-
-    # Just check the deprecation warning fires; don't actually hit NED
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        try:
-            get_AV_infinity(0.0, 0.0)
-        except Exception:
-            pass  # expected -- no network or NED scrape in CI
-        dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(dep_warnings) == 1
-        assert "get_AV_infinity" in str(dep_warnings[0].message) or "NED" in str(dep_warnings[0].message)

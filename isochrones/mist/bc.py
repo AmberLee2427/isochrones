@@ -1,3 +1,4 @@
+import os
 import re
 
 from ..bc import BolometricCorrectionGrid
@@ -167,10 +168,12 @@ class MISTBolometricCorrectionGrid(BolometricCorrectionGrid):
             "Roman_F087",
             "Roman_F106",
             "Roman_F129",
+            "Roman_F146",
             "Roman_F158",
-            "Roman_W146",
             "Roman_F184",
             "Roman_F213",
+            "Roman_Grism",
+            "Roman_Prism",
         ],
         # Euclid VIS + NISP photometric bands (available in MIST v2.5 BC tables)
         Euclid=[
@@ -199,15 +202,61 @@ class MISTBolometricCorrectionGrid(BolometricCorrectionGrid):
 
     default_bands = ("J", "H", "K", "G", "BP", "RP", "W1", "W2", "W3", "TESS", "Kepler")
 
-    def __init__(self, bands=None, version="1.2"):
+    def __init__(self, bands=None, version="1.2", afe=0.0):
         self.version = version
+        self.afe = afe
         super().__init__(bands=bands)
+
+    @property
+    def datadir(self):
+        from ..config import ISOCHRONES
+        # v2.5 BC tables are incompatible with v1.2; keep separate directories.
+        if self.version >= "2.5":
+            return os.path.join(ISOCHRONES, "BC", "mist_v2")
+        return os.path.join(ISOCHRONES, "BC", self.name)
 
     def get_tarball_url(self, phot):
         cfg = MIST_VERSIONS[self.version]
         return cfg["bc_url"].format(phot=phot)
 
+    def parse_table(self, filename):
+        if self.version >= "2.5":
+            import pandas as pd
+            # v2.5 header: lgTef logg Fe_H a_Fe Av Rv <band> ...
+            with open(filename) as fin:
+                for line in fin:
+                    if line.startswith("# lgTef"):
+                        names = line[1:].split()
+                        break
+            df = pd.read_csv(filename, names=names, sep=r"\s+", comment="#")
+            df = df.rename(columns={"lgTef": "Teff", "Fe_H": "[Fe/H]", "a_Fe": "afe"})
+            df["Teff"] = 10 ** df["Teff"]
+            df = df.set_index(["Teff", "logg", "[Fe/H]", "afe", "Av", "Rv"])
+            return df
+        return super().parse_table(filename)
+
     def get_df(self, *args, **kwargs):
+        if self.version >= "2.5":
+            import glob
+            import pandas as pd
+            afe = self.afe
+            df_all = pd.DataFrame()
+            for phot in self.phot_systems:
+                hdf_filename = self.get_hdf_filename(phot=phot)
+                if not os.path.exists(hdf_filename):
+                    filenames = glob.glob(os.path.join(self.datadir, "*.{}".format(phot)))
+                    if not filenames:
+                        self.extract_tarball(phot=phot)
+                        filenames = glob.glob(os.path.join(self.datadir, "*.{}".format(phot)))
+                    df = pd.concat([self.parse_table(f) for f in filenames]).sort_index()
+                    df.to_hdf(path_or_buf=hdf_filename, key="df")
+                df = pd.read_hdf(hdf_filename)
+                df_all = pd.concat([df_all, df], axis=1)
+            df_all = df_all.rename(columns={v: k for k, v in self.band_map.items()})
+            for col in list(df_all.columns):
+                if col not in self.bands:
+                    del df_all[col]
+            return df_all.xs(3.1, level="Rv").xs(afe, level="afe")
         df = super().get_df(*args, **kwargs)
         return df.xs(3.1, level="Rv")
 

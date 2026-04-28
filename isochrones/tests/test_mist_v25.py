@@ -6,7 +6,6 @@ Mirrors test_basic.py but exercises v2.5-specific features:
   - New filter systems (Roman, Euclid, Gaia EDR3)
   - Alpha-enhanced grid selection
   - WD EEP range infrastructure
-  - max_eep_v25 function
 
 These tests are intentionally fast -- they check plumbing and structure
 rather than full grid downloads.
@@ -17,7 +16,7 @@ import pytest
 
 from isochrones.mist.models import MIST_VERSIONS, MISTIsochroneGrid, MISTEvolutionTrackGrid
 from isochrones.mist.bc import MISTBolometricCorrectionGrid
-from isochrones.mist.eep import max_eep, max_eep_v25
+from isochrones.mist.eep import max_eep
 from isochrones.mist.isochrone import MIST_Isochrone, MIST_EvolutionTrack
 
 
@@ -105,19 +104,19 @@ def test_v25_track_url():
     url = g.get_tarball_url(-0.5)
     assert "mist.science" in url
     assert "eeps/" in url
-    assert "afe_p0.0" in url
+    assert "afe_p0" in url
 
 
 def test_v25_track_url_alpha():
     g = _make_track_grid("2.5", afe=0.4)
     url = g.get_tarball_url(-0.5)
-    assert "afe_p0.4" in url
+    assert "afe_p4" in url
 
 
 def test_v25_track_url_negative_alpha():
     g = _make_track_grid("2.5", afe=-0.2)
     url = g.get_tarball_url(-0.5)
-    assert "afe_m0.2" in url
+    assert "afe_m2" in url
 
 
 # --- kwarg_tag cache isolation ---
@@ -136,30 +135,21 @@ def test_iso_kwarg_tag_v25():
 
 def test_track_kwarg_tag_v25_includes_afe():
     g = _make_track_grid("2.5", afe=0.4)
-    assert "afe_p0.4" in g.kwarg_tag
+    assert "afe_p4" in g.kwarg_tag
 
     g0 = _make_track_grid("2.5", afe=0.0)
-    assert "afe_p0.0" in g0.kwarg_tag
+    assert "afe_p0" in g0.kwarg_tag
     assert g0.kwarg_tag != g.kwarg_tag
 
 
 # --- EEP dispatch ---
 
-def test_max_eep_v25_returns_value():
-    # Solar analog
-    assert max_eep_v25(1.0, 0.0) > 0
-    assert np.isfinite(max_eep_v25(1.0, 0.0))
-
-    # High mass (no WD)
-    assert max_eep_v25(20.0, 0.0) > 0
-
-
 def test_max_eep_dispatch():
     g12 = _make_iso_grid("1.2")
     g25 = _make_iso_grid("2.5")
-    # Both should return a valid EEP for a solar-analog
+    # Both versions use max_eep (v1.2 analytical); v2.5 track ceiling is data-derived
     assert g12.max_eep(1.0, 0.0) == max_eep(1.0, 0.0)
-    assert g25.max_eep(1.0, 0.0) == max_eep_v25(1.0, 0.0)
+    assert g25.max_eep(1.0, 0.0) == max_eep(1.0, 0.0)
 
 
 # --- Bolometric correction grid ---
@@ -210,9 +200,9 @@ def test_roman_band_resolution():
     assert phot == "Roman"
     assert band == "Roman_F062"
 
-    phot, band = MISTBolometricCorrectionGrid.get_band("Roman_W146")
+    phot, band = MISTBolometricCorrectionGrid.get_band("Roman_F146")
     assert phot == "Roman"
-    assert band == "Roman_W146"
+    assert band == "Roman_F146"
 
 
 def test_euclid_band_resolution():

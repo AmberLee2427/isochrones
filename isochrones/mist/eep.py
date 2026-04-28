@@ -57,16 +57,3 @@ def max_eep(mass, feh):
         return default_max_eep(mass)
     else:
         return eep
-
-
-def max_eep_v25(mass, feh):
-    """For MIST v2.5
-
-    WD cooling extends the EEP sequence past the WDCS entry point (1710).
-    Stars that produce WDs (roughly 0.5-8 Msun) may have EEPs beyond 1710
-    depending on how far along the cooling sequence the grid runs.
-
-    For now returns the same ceilings as v1.2; update once v2.5 data files
-    are inspected to confirm the actual per-star EEP limits.
-    """
-    return max_eep(mass, feh)
