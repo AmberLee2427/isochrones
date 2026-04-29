@@ -202,7 +202,9 @@ class MISTBolometricCorrectionGrid(BolometricCorrectionGrid):
 
     default_bands = ("J", "H", "K", "G", "BP", "RP", "W1", "W2", "W3", "TESS", "Kepler")
 
-    def __init__(self, bands=None, version="1.2", afe=0.0):
+    def __init__(self, bands=None, version="1.2", afe=None):
+        if version >= "2.5" and afe is None:
+            raise ValueError("MIST v2.5 bolometric corrections require an explicit afe value.")
         self.version = version
         self.afe = afe
         super().__init__(bands=bands)
@@ -269,6 +271,12 @@ class MISTBolometricCorrectionGrid(BolometricCorrectionGrid):
         """
         phot = None
         version = kwargs.get("version", "1.2")
+        spitzer_aliases = {
+            "IRAC_3.6": "IRAC_36",
+            "IRAC_4.5": "IRAC_45",
+            "IRAC_5.8": "IRAC_58",
+            "IRAC_8.0": "IRAC_80",
+        }
 
         # Default to SDSS for these
         if b in ["u", "g", "r", "i", "z"]:
@@ -322,7 +330,7 @@ class MISTBolometricCorrectionGrid(BolometricCorrectionGrid):
             for system, bands in cls.phot_bands.items():
                 if b in bands:
                     phot = system
-                    band = b
+                    band = spitzer_aliases.get(b, b)
                     break
             if phot is None:
                 raise ValueError("MIST grids cannot resolve band {}!".format(b))

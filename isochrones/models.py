@@ -179,30 +179,50 @@ class StellarModelGrid(Grid):
                 raise NotImplementedError("Not implemented for isochrone grids yet!")
 
             n = len(ii0) * len(ii1)
-            age_arrays = np.zeros((n, self.n_eep)) * np.nan
-            dt_deep_arrays = np.zeros((n, self.n_eep)) * np.nan
+            width = self.n_eep
+            age_arrays = np.full((n, width), np.nan)
+            dt_deep_arrays = np.full((n, width), np.nan)
             lengths = np.zeros(n) * np.nan
             for i, (x0, x1) in tqdm(
                 enumerate(itertools.product(ii0, ii1)), total=n, desc="building irregular age grid"
             ):
                 subdf = self.df.xs((x0, x1), level=(0, 1))
                 xs = subdf[self.eep_replaces].values
+                dt_values = subdf.dt_deep.values
                 lengths[i] = len(xs)
-                try:
-                    age_arrays[i, : len(xs)] = xs
-                    dt_deep_arrays[i, : len(xs)] = subdf.dt_deep.values
-                except ValueError:
-                    import pdb
 
-                    pdb.set_trace()
+                if len(xs) != len(dt_values):
+                    raise ValueError(
+                        "age/dt_deep length mismatch for grid point ({}, {}): {} vs {}".format(
+                            x0, x1, len(xs), len(dt_values)
+                        )
+                    )
+
+                needed_width = len(xs)
+                if needed_width > width:
+                    pad = needed_width - width
+                    age_arrays = np.pad(age_arrays, ((0, 0), (0, pad)), constant_values=np.nan)
+                    dt_deep_arrays = np.pad(dt_deep_arrays, ((0, 0), (0, pad)), constant_values=np.nan)
+                    width = needed_width
+
+                age_arrays[i, : len(xs)] = xs
+                dt_deep_arrays[i, : len(dt_values)] = dt_values
 
             np.savez(
                 self.array_grid_filename, age=age_arrays, dt_deep=dt_deep_arrays, lengths=lengths.astype(int)
             )
 
         d = np.load(self.array_grid_filename)
+        age_grid = d["age"]
+        dt_deep_grid = d["dt_deep"]
+        lengths = d["lengths"]
+        d.close()
 
-        return d["age"], d["dt_deep"], d["lengths"]
+        if len(lengths) and age_grid.shape[1] < int(np.max(lengths)):
+            os.remove(self.array_grid_filename)
+            return self.get_array_grids(recalc=True)
+
+        return age_grid, dt_deep_grid, lengths
 
     @property
     def array_grid_filename(self):
@@ -344,8 +364,10 @@ class ModelGridInterpolator(object):
     def bc_grid(self):
         if self._bc_grid is None:
             version = self.kwargs.get("version", "1.2")
-            afe = self.kwargs.get("afe")
-            self._bc_grid = self.bc_type(self.bands, version=version, afe=afe)
+            bc_kwargs = {"version": version}
+            if "afe" in self.kwargs:
+                bc_kwargs["afe"] = self.kwargs["afe"]
+            self._bc_grid = self.bc_type(self.bands, **bc_kwargs)
         return self._bc_grid
 
     def initialize(self, pars=None):

@@ -93,6 +93,12 @@ class MISTModelGrid(StellarModelGrid):
 
     eep_labels_highmass = ("PMS", "ZAMS", "IAMS", "TAMS", "RGBTip", "ZACHeB", "TACHeB", "C-burn")
 
+    def __init__(self, *args, **kwargs):
+        version = kwargs.get("version", self.default_kwargs.get("version", "1.2"))
+        if version >= "2.5" and MIST_VERSIONS[version]["has_alpha"] and "afe" not in kwargs:
+            raise ValueError("MIST v2.5 grids require an explicit afe value.")
+        super().__init__(*args, **kwargs)
+
     @property
     def _version_config(self):
         return MIST_VERSIONS[self.kwargs.get("version", "1.2")]
