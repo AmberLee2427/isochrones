@@ -609,6 +609,7 @@ class ModelGridInterpolator(object):
         props="all",
         bands=None,
         eeps=None,
+        interp_method="eep",
         return_df=True,
         return_dict=False,
         distance=10,
@@ -624,6 +625,35 @@ class ModelGridInterpolator(object):
 
         if bands is None:
             bands = self.bands
+        if interp_method == "direct_grid":
+            return self.generate_direct_grid(
+                mass,
+                age,
+                feh,
+                props=props,
+                bands=bands,
+                return_df=return_df,
+                return_dict=return_dict,
+                distance=distance,
+                AV=AV,
+                all_As=all_As,
+            )
+        if interp_method == "direct_grid_nearest":
+            return self.generate_direct_grid(
+                mass,
+                age,
+                feh,
+                props=props,
+                bands=bands,
+                return_df=return_df,
+                return_dict=return_dict,
+                distance=distance,
+                AV=AV,
+                all_As=all_As,
+                nearest=True,
+            )
+        elif interp_method != "eep":
+            raise ValueError("interp_method must be 'eep', 'direct_grid', or 'direct_grid_nearest'")
         if eeps is None:
             eeps = self.get_eep(mass, age, feh, **kwargs)
         values = self.interp_value([mass, eeps, feh], props)
@@ -702,7 +732,7 @@ class EvolutionTrackInterpolator(ModelGridInterpolator):
         if self._iso is None:
             if self._iso_type is None:
                 raise ValueError("{} has no _iso_type!.".format(type(self)))
-            self._iso = self._iso_type(bands=self.bands)
+            self._iso = self._iso_type(bands=self.bands, **self.kwargs)
         return self._iso
 
     def mass_age_resid(self, eep, mass, age, feh):
@@ -710,6 +740,208 @@ class EvolutionTrackInterpolator(ModelGridInterpolator):
         age_interp = self.interp_value([mass, eep, feh], ["age"])
         # return (mass - mass_interp)**2 + (age - age_interp)**2
         return (age - age_interp) ** 2
+
+    @staticmethod
+    def _direct_grid_weights(grid, x):
+        grid = np.array(grid)
+        if x < grid[0] or x > grid[-1]:
+            return []
+        ihi = np.searchsorted(grid, x)
+        if ihi < len(grid) and grid[ihi] == x:
+            return [(ihi, 1.0)]
+        if ihi == 0 or ihi == len(grid):
+            return []
+        ilo = ihi - 1
+        dx = grid[ihi] - grid[ilo]
+        return [(ilo, (grid[ihi] - x) / dx), (ihi, (x - grid[ilo]) / dx)]
+
+    @staticmethod
+    def _interp_one_isochrone_mass(subdf, mass, props):
+        xs = np.array(subdf["initial_mass"])
+        order = np.argsort(xs)
+        xs = xs[order]
+        values = np.empty(len(props), dtype=float)
+        for i, prop in enumerate(props):
+            ys = np.array(subdf[prop])[order]
+            values[i] = np.interp(mass, xs, ys, left=np.nan, right=np.nan)
+        return values
+
+    @staticmethod
+    def _direct_grid_mass_indices(subdf, mass):
+        xs = np.array(subdf["initial_mass"])
+        order = np.argsort(xs)
+        xs = xs[order]
+        if len(xs) == 0 or mass < xs[0] or mass > xs[-1]:
+            return []
+        ihi = np.searchsorted(xs, mass)
+        if ihi < len(xs) and xs[ihi] == mass:
+            return [order[ihi]]
+        if ihi == 0 or ihi == len(xs):
+            return []
+        return [order[ihi - 1], order[ihi]]
+
+    def _direct_grid_phases_consistent(self, mass, age_weights, feh_weights):
+        df = self.iso.model_grid.df
+        if "phase" not in df.columns:
+            raise ValueError("direct_grid interpolation requires a phase column")
+
+        age_grid = np.array(df.index.levels[0])
+        feh_grid = np.array(df.index.levels[1])
+        phases = []
+        for i_age, w_age in age_weights:
+            for i_feh, w_feh in feh_weights:
+                if w_age * w_feh == 0:
+                    continue
+                subdf = df.xs((age_grid[i_age], feh_grid[i_feh]), level=(0, 1))
+                rows = self._direct_grid_mass_indices(subdf, mass)
+                phases.extend(np.array(subdf["phase"])[rows])
+
+        if len(phases) == 0:
+            return True
+        first_phase = phases[0]
+        return all(phase == first_phase for phase in phases)
+
+    @staticmethod
+    def _direct_grid_nearest_indices(grid, x):
+        grid = np.array(grid)
+        return np.argsort(np.abs(grid - x))
+
+    def direct_grid_nearest_value(self, mass, age, feh, props):
+        if isinstance(props, str):
+            props = [props]
+
+        df = self.iso.model_grid.df
+        age_grid = np.array(df.index.levels[0])
+        feh_grid = np.array(df.index.levels[1])
+        age_indices = self._direct_grid_nearest_indices(age_grid, age)
+        feh_indices = self._direct_grid_nearest_indices(feh_grid, feh)
+
+        for i_age in age_indices:
+            for i_feh in feh_indices:
+                subdf = df.xs((age_grid[i_age], feh_grid[i_feh]), level=(0, 1))
+                cols = list(props)
+                if "initial_mass" not in cols:
+                    cols.append("initial_mass")
+                values = subdf[cols].dropna()
+                if len(values) == 0:
+                    continue
+                i_mass = np.argmin(np.abs(np.array(values["initial_mass"]) - mass))
+                return np.array(values.iloc[i_mass][props], dtype=float)
+
+        return np.full(len(props), np.nan)
+
+    def direct_grid_value(self, mass, age, feh, props):
+        if isinstance(props, str):
+            props = [props]
+
+        df = self.iso.model_grid.df
+        age_grid = np.array(df.index.levels[0])
+        feh_grid = np.array(df.index.levels[1])
+        age_weights = self._direct_grid_weights(age_grid, age)
+        feh_weights = self._direct_grid_weights(feh_grid, feh)
+        values = np.zeros(len(props), dtype=float)
+        total_weight = 0.0
+
+        if not self._direct_grid_phases_consistent(mass, age_weights, feh_weights):
+            return np.full(len(props), np.nan)
+
+        for i_age, w_age in age_weights:
+            for i_feh, w_feh in feh_weights:
+                weight = w_age * w_feh
+                if weight == 0:
+                    continue
+                subdf = df.xs((age_grid[i_age], feh_grid[i_feh]), level=(0, 1))
+                values += weight * self._interp_one_isochrone_mass(subdf, mass, props)
+                total_weight += weight
+
+        if total_weight == 0:
+            values[:] = np.nan
+        return values
+
+    def direct_grid_values(self, mass, age, feh, props, nearest=False):
+        b = np.broadcast(mass, age, feh)
+        pars = [np.atleast_1d(np.resize(x, b.shape)).astype(float) for x in [mass, age, feh]]
+        if nearest:
+            values = np.array([self.direct_grid_nearest_value(m, a, f, props) for m, a, f in zip(*pars)])
+        else:
+            values = np.array([self.direct_grid_value(m, a, f, props) for m, a, f in zip(*pars)])
+        if values.shape[0] == 1 and np.size(mass) == np.size(age) == np.size(feh) == 1:
+            return values[0]
+        return values
+
+    def direct_grid_mags(self, interp_values, props, distance, AV, bands):
+        if not bands:
+            return np.array([])
+        i_Teff = props.index("Teff")
+        i_logg = props.index("logg")
+        i_feh = props.index("feh")
+        i_Mbol = props.index("Mbol")
+        values = np.atleast_2d(interp_values)
+        Teff = values[:, i_Teff]
+        logg = values[:, i_logg]
+        feh = values[:, i_feh]
+        Mbol = values[:, i_Mbol]
+        bc = self.bc_grid.interp([Teff, logg, feh, AV], bands)
+        bc = np.atleast_2d(bc)
+        dist_mod = 5 * np.log10(np.atleast_1d(distance).astype(float) / 10.0)
+        mags = Mbol[:, None] + dist_mod[:, None] - bc
+        if np.ndim(interp_values) == 1:
+            return mags[0]
+        return mags
+
+    def generate_direct_grid(
+        self,
+        mass,
+        age,
+        feh,
+        props="all",
+        bands=None,
+        return_df=True,
+        return_dict=False,
+        distance=10,
+        AV=0,
+        all_As=False,
+        nearest=False,
+    ):
+        if bands is None:
+            bands = self.bands
+        if props == "all":
+            props = list(self.iso.model_grid.df.columns)
+        else:
+            props = list(np.atleast_1d(props))
+
+        interp_props = list(props)
+        if bands:
+            for prop in ["Teff", "logg", "feh", "Mbol"]:
+                if prop not in interp_props:
+                    interp_props.append(prop)
+
+        interp_values = self.direct_grid_values(mass, age, feh, interp_props, nearest=nearest)
+        values = np.atleast_2d(interp_values)[:, [interp_props.index(p) for p in props]]
+        if np.ndim(interp_values) == 1:
+            values = values[0]
+
+        if bands:
+            mags = self.direct_grid_mags(interp_values, interp_props, distance, AV, bands)
+            axis = 1 if values.ndim == 2 else 0
+            values = np.concatenate([values, mags], axis=axis)
+
+        if return_dict:
+            values = dict(zip(props + ["{}_mag".format(b) for b in bands], values))
+        elif return_df:
+            values = pd.DataFrame(np.atleast_2d(values), columns=props + ["{}_mag".format(b) for b in bands])
+
+        values["distance"] = distance
+        values["AV"] = AV
+        values["initial_feh"] = feh
+        values["requested_age"] = age
+
+        if all_As:
+            true_mags = self.direct_grid_mags(interp_values, interp_props, distance, 0, bands)
+            for b, true_mag in zip(bands, true_mags.T):
+                values[f"A_{b}"] = values[f"{b}_mag"] - true_mag
+
+        return values
 
 
 class IsochroneInterpolator(ModelGridInterpolator):

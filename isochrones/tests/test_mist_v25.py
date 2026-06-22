@@ -162,7 +162,7 @@ def test_bc_gaia_v12_gives_dr2rev():
 
 
 def test_bc_gaia_v25_gives_edr3():
-    bc = MISTBolometricCorrectionGrid(bands=["G", "BP", "RP"], version="2.5")
+    bc = MISTBolometricCorrectionGrid(bands=["G", "BP", "RP"], version="2.5", afe=0.0)
     assert bc.band_map["G"] == "Gaia_G_EDR3"
     assert bc.band_map["BP"] == "Gaia_BP_EDR3"
     assert bc.band_map["RP"] == "Gaia_RP_EDR3"
@@ -174,8 +174,15 @@ def test_bc_url_v12():
     assert "waps.cfa.harvard.edu" in url
 
 
+def test_bc_irac_v12_resolves_spitzer():
+    bc = MISTBolometricCorrectionGrid(bands=["IRAC_3.6"], version="1.2")
+    assert bc.phot_systems == {"SPITZER"}
+    assert bc.band_map["IRAC_3.6"] == "IRAC_36"
+    assert bc.get_tarball_url("SPITZER") == "https://mist.science/BC_tables/v1/SPITZER.txz"
+
+
 def test_bc_url_v25():
-    bc = MISTBolometricCorrectionGrid(bands=["G"], version="2.5")
+    bc = MISTBolometricCorrectionGrid(bands=["G"], version="2.5", afe=0.0)
     url = bc.get_tarball_url("UBVRIplus")
     assert "mist.science" in url
     assert "BC_tables/v2" in url

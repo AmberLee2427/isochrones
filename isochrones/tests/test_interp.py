@@ -44,3 +44,18 @@ def test_interp():
     assert np.allclose(
         df_interp([pts[:, 0], pts[:, 1], pts[:, 2]], ["val"]).ravel(), interp(pts), atol=1e-11
     )
+
+
+def test_zero_weight_nan_corner_does_not_poison_exact_gridpoint():
+    df = pd.DataFrame(
+        [
+            (x, y, z, x + y + z)
+            for x, y, z in itertools.product([0.0, 1.0], [0.0, 1.0], [0.0, 1.0])
+        ],
+        columns=["x", "y", "z", "val"],
+    ).set_index(["x", "y", "z"])
+    df.loc[(1.0, 1.0, 1.0), "val"] = np.nan
+
+    df_interp = DFInterpolator(df)
+
+    assert df_interp([0.0, 0.0, 0.0], ["val"]) == 0.0

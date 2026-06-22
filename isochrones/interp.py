@@ -239,6 +239,9 @@ def interp_value_2d(x0, x1, grid, icols, ii0, ii1):
             else:
                 weight *= yi
 
+        if weight == 0.0:
+            continue
+
         for i_icol in range(n_values):
             icol = icols[i_icol]
 
@@ -282,6 +285,9 @@ def interp_value_3d(x0, x1, x2, grid, icols, ii0, ii1, ii2):
                 weight *= 1 - yi
             else:
                 weight *= yi
+
+        if weight == 0.0:
+            continue
 
         for i_icol in range(n_values):
             icol = icols[i_icol]
@@ -327,6 +333,9 @@ def interp_value_4d(x0, x1, x2, x3, grid, icols, ii0, ii1, ii2, ii3):
                 weight *= 1 - yi
             else:
                 weight *= yi
+
+        if weight == 0.0:
+            continue
 
         for i_icol in range(n_values):
             icol = icols[i_icol]

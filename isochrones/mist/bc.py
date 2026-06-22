@@ -218,6 +218,8 @@ class MISTBolometricCorrectionGrid(BolometricCorrectionGrid):
         return os.path.join(ISOCHRONES, "BC", self.name)
 
     def get_tarball_url(self, phot):
+        if self.version < "2.5" and phot == "SPITZER":
+            return "https://mist.science/BC_tables/v1/SPITZER.txz"
         cfg = MIST_VERSIONS[self.version]
         return cfg["bc_url"].format(phot=phot)
 
